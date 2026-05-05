@@ -1,0 +1,7 @@
+# Windows: run install_requirements.bat — installs Python (winget) if missing, pip packages,
+# then renames iw_00..iw_04 -> localized_english_aa..aae (.iwd) in the same folder if present.
+# Manual: install Python 3.10+ from https://www.python.org/downloads/ , then:
+#   python -m pip install -r requirements.txt
+
+Pillow>=10.0.0
+pygame-ce>=2.5.0
