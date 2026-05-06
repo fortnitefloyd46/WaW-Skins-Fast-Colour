@@ -1,29 +1,29 @@
 @echo off
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
+set "HERE=%~dp0"
+if "%HERE:~-1%"=="\" set "HERE=%HERE:~0,-1%"
+set "VENV_PY=%HERE%\.venv\Scripts\python.exe"
 
-call :resolve_python
-if not defined PYTHON_EXE (
-  echo Python not found. Run **install_requirements.bat** first ^(it can install Python via winget^).
-  pause
-  exit /b 1
-)
-
-"!PYTHON_EXE!" "%~dp0iwd_recolor_gui.py"
-set ERR=%errorlevel%
-if %ERR% neq 0 pause
-exit /b %ERR%
-
-:resolve_python
-set "PYTHON_EXE="
-for /f "delims=" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON_EXE=%%i"
-if defined PYTHON_EXE exit /b 0
-for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON_EXE=%%i"
-if defined PYTHON_EXE exit /b 0
-for %%V in (314 313 312 311 310) do (
-  if exist "!LocalAppData!\Programs\Python\Python%%V\python.exe" (
-    set "PYTHON_EXE=!LocalAppData!\Programs\Python\Python%%V\python.exe"
-    exit /b 0
+if exist "%VENV_PY%" (
+  "%VENV_PY%" "%HERE%\iwd_recolor_gui.py"
+  set ERR=!errorlevel!
+  if !ERR! neq 0 (
+    echo.
+    echo If you see "No module named ...", run **install_requirements.bat** again.
+    pause
   )
+  exit /b !ERR!
 )
-exit /b 0
+
+echo ============================================================
+echo  No virtual environment found at:
+echo    %VENV_PY%
+echo.
+echo  Run **install_requirements.bat** first.
+echo  It installs Python ^(if needed^), creates .venv, and installs
+echo  Pillow, numpy, pygame-ce, and all other dependencies.
+echo ============================================================
+echo.
+pause
+exit /b 1

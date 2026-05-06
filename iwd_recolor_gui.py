@@ -7,12 +7,13 @@ Place next to this script:
   - dds2iwi-cod4.exe          (same as your existing converter)
   - iwi2dds_cod4.exe          (IWI -> DDS; companion to dds2iwi — get from COD modding wiki)
 
-Requires: Python 3.10+, Pillow, pygame-ce (MP3 in __pycache__), and Microsoft texconv on PATH or default WinGet path.
+Requires: Python 3.10+, Pillow, numpy, pygame-ce (MP3 in __pycache__), and Microsoft texconv on PATH or default WinGet path.
 
 Optional MP3 fallback if pygame-ce is unavailable: install FFmpeg and add ``ffplay`` to PATH (volume still works).
 
-Windows setup: run ``install_requirements.bat`` (installs Python via winget if needed, then pip).
-Then run ``run_iwd_recolor_gui.bat`` or: ``python iwd_recolor_gui.py``
+Windows setup: run ``install_requirements.bat`` — it creates a ``.venv`` in this folder, installs
+Python via winget if none is found, then pip-installs Pillow, numpy, pygame-ce, etc. into that venv.
+Always start the app with ``run_iwd_recolor_gui.bat`` so it uses ``.venv`` (avoids missing numpy / wrong Python).
 """
 
 from __future__ import annotations
@@ -181,15 +182,26 @@ def stop_mp3_music() -> None:
 
 
 def find_texconv() -> Path | None:
-    p = shutil.which("texconv")
-    if p:
-        return Path(p)
+    w = shutil.which("texconv")
+    if w:
+        return Path(w).resolve()
+    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
     for cand in (
+        app_dir() / "texconv.exe",
         Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "texconv.exe",
         Path(r"C:\Program Files\Microsoft DirectX Texture Converter\texconv.exe"),
+        Path(pf86) / "Microsoft DirectX Texture Converter" / "texconv.exe",
     ):
         if cand.is_file():
             return cand.resolve()
+    pk = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
+    if pk.is_dir():
+        try:
+            for folder in sorted(pk.glob("Microsoft.DirectXTex.Texconv_*"), reverse=True):
+                for exe in folder.rglob("texconv.exe"):
+                    return exe.resolve()
+        except OSError:
+            pass
     return None
 
 
@@ -662,8 +674,10 @@ def main() -> None:
         if not texc:
             messagebox.showerror(
                 "Missing texconv",
-                "Install DirectXTex texconv (e.g. winget install Microsoft.DirectXTex.Texconv) "
-                "or add texconv.exe to PATH.",
+                "DirectXTex texconv is required for DDS/PNG conversion.\n\n"
+                "Run **install_requirements.bat** again (it installs texconv via winget),\n"
+                "or run in a terminal: winget install Microsoft.DirectXTex.Texconv\n"
+                "Or place **texconv.exe** in this program folder.",
             )
             return
 

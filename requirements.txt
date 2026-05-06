@@ -1,7 +1,14 @@
-# Windows: run install_requirements.bat — installs Python (winget) if missing, pip packages,
-# then renames iw_00..iw_04 -> localized_english_aa..aae (.iwd) in the same folder if present.
-# Manual: install Python 3.10+ from https://www.python.org/downloads/ , then:
-#   python -m pip install -r requirements.txt
+# install_requirements.bat:
+#   1) Finds or installs Python (winget or you install from python.org)
+#   2) Creates .venv in this folder
+#   3) pip installs packages below into .venv
+#   4) Installs DirectXTex texconv via winget (DDS/PNG for COLOR — not a pip package)
+#
+# run_iwd_recolor_gui.bat always uses .venv\Scripts\python.exe
+#
+# Manual:  python -m venv .venv
+#          .venv\Scripts\python.exe -m pip install -r requirements.txt
 
 Pillow>=10.0.0
+numpy>=1.24.0
 pygame-ce>=2.5.0
