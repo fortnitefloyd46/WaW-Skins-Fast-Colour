@@ -4,8 +4,11 @@ late-loading ``zz_team_colours.iwd`` so stock duplicates (iw_01/iw_02) cannot
 hide Red Army skins.
 
 Optional checkboxes on COLOR:
-  - ``no smoke`` → ``fx_drawClouds 0`` + ``zz_no_smoke.iwd``
+  - ``no smoke`` → replace smoke particle IWIs with ``smoke_particle.png`` → ``zz_no_smoke.iwd``
+    (keeps clouds drawing so the custom particles are visible)
   - ``no foliage`` → grass dvars off + blank foliage/grass → ``zz_no_foliage.iwd``
+  - ``better scope`` → COD4 scope pixels in stock WaW IWI shells → ``zz_better_scope.iwd``
+    (source: ``scope_source.zip`` / ``scope.iwd``)
 
 Place next to this script:
   - iw_*.iwd / localized_english_*.iwd (game main folder)
@@ -78,11 +81,35 @@ SMOKE_OVERRIDE_LEGACY = "zz_smoke_opacity.iwd"
 SMOKE_AUTOEXEC_MARKER_BEGIN = "// --- WaW-Skins-Fast-Colour no smoke begin ---"
 SMOKE_AUTOEXEC_MARKER_END = "// --- WaW-Skins-Fast-Colour no smoke end ---"
 SMOKE_AUTOEXEC_CFG = "autoexec.cfg"
+# Custom particle image used when ``no smoke`` is checked (near-black → transparent).
+SMOKE_PARTICLE_PNG = "smoke_particle.png"
 
 FOLIAGE_OVERRIDE_IWD = "zz_no_foliage.iwd"
 FOLIAGE_OVERRIDE_IWD_LOCALIZED = "localized_english_zzzz_no_foliage.iwd"
 FOLIAGE_AUTOEXEC_MARKER_BEGIN = "// --- WaW-Skins-Fast-Colour no foliage begin ---"
 FOLIAGE_AUTOEXEC_MARKER_END = "// --- WaW-Skins-Fast-Colour no foliage end ---"
+
+# COD4 scope pack (ZIP). Keep as ``.zip`` so the game does not load it as an IWD.
+SCOPE_SOURCE_IWD = "scope_source.zip"
+SCOPE_SOURCE_FALLBACKS = ("scope.iwd", "scope.zip")
+BETTER_SCOPE_OVERRIDE_IWD = "zz_better_scope.iwd"
+BETTER_SCOPE_OVERRIDE_IWD_LOCALIZED = "localized_english_zzzz_better_scope.iwd"
+WAW_SCOPE_OVERLAY_NAMES = (
+    "scope_overlay.iwi",
+    "scope_overlay_american.iwi",
+    "scope_overlay_britain.iwi",
+    "scope_overlay_german.iwi",
+    "scope_overlay_japanese.iwi",
+    "scope_overlay_mp.iwi",
+    "scope_overlay_russian.iwi",
+)
+# Fraction unused; stars use fixed pixel size so they never become a big ring.
+SMOKE_PARTICLE_SCALE = 0.04
+# Each stamped star is this many pixels wide (fixed — not relative to texture).
+SMOKE_STAR_PX = 10
+# Rough stars per 256×256 texel area.
+SMOKE_STARS_PER_256 = 48
+
 FXT_SMK_PREFIX = "fxt_smk"
 # Extra particle/sprite names often used alongside grenade smoke FX.
 SMOKE_EXTRA_IMAGE_NAMES = (
@@ -405,14 +432,72 @@ def update_autoexec_block(
 
 
 def apply_no_smoke_autoexec(base: Path, enabled: bool) -> str:
-    """MP smoke clouds use engine particle-clouds (``fx_drawClouds``)."""
-    val = "0" if enabled else "1"
+    """
+    Legacy hide-clouds toggle. Custom particle replacement keeps clouds enabled
+    (``fx_drawClouds 1``) so the remapped sprites can draw.
+    """
+    # ``enabled`` used to mean "hide smoke"; custom PNG mode always leaves clouds on.
+    val = "1"
     return update_autoexec_block(
         base,
         begin=SMOKE_AUTOEXEC_MARKER_BEGIN,
         end=SMOKE_AUTOEXEC_MARKER_END,
         body_lines=[f'seta fx_drawClouds "{val}"'],
     )
+
+
+def find_smoke_particle_png(base: Path) -> Path | None:
+    """Locate the custom smoke particle PNG (bundled name or Pictures fallback)."""
+    candidates = [
+        base / SMOKE_PARTICLE_PNG,
+        app_dir() / SMOKE_PARTICLE_PNG,
+        Path.home() / "Pictures" / "Israeli_blue_Star_of_David.png",
+        Path.home() / "OneDrive" / "Pictures" / "Israeli_blue_Star_of_David.png",
+        app_dir() / "Israeli_blue_Star_of_David.png",
+        base / "Israeli_blue_Star_of_David.png",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def load_smoke_particle_rgba(src: Path) -> Image.Image:
+    """Load particle art; force near-black background to transparent."""
+    with Image.open(src) as im:
+        rgba = im.convert("RGBA")
+    arr = np.array(rgba)
+    # Treat near-black as transparent so only the star shows as a particle.
+    lum = arr[:, :, :3].max(axis=2)
+    arr[lum < 24, 3] = 0
+    return Image.fromarray(arr, "RGBA")
+
+
+def fit_particle_to_size(particle: Image.Image, w: int, h: int) -> Image.Image:
+    """
+    Fill the texture with many fixed-size tiny stars.
+
+    A single large Star-of-David outline reads as a blue hexagonal/square ring in
+    smoke billboards; a starfield of ~10px stamps looks like particle stars.
+    """
+    canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    star_px = max(6, min(SMOKE_STAR_PX, min(w, h) // 2))
+    art = particle.copy()
+    art.thumbnail((star_px, star_px), Image.Resampling.LANCZOS)
+    if art.width < 2 or art.height < 2:
+        return canvas
+
+    area_scale = (w * h) / float(256 * 256)
+    n = max(8, int(SMOKE_STARS_PER_256 * area_scale))
+    n = min(n, 400)
+    rng = np.random.default_rng(abs(hash((w, h))) % (2**32))
+    max_x = max(1, w - art.width)
+    max_y = max(1, h - art.height)
+    for _ in range(n):
+        x = int(rng.integers(0, max_x))
+        y = int(rng.integers(0, max_y))
+        canvas.alpha_composite(art, (x, y))
+    return canvas
 
 
 def apply_no_foliage_autoexec(base: Path, enabled: bool) -> str:
@@ -449,6 +534,319 @@ def remove_foliage_override_iwds(base: Path) -> list[str]:
     return removed
 
 
+def remove_better_scope_override_iwds(base: Path) -> list[str]:
+    removed: list[str] = []
+    for name in (BETTER_SCOPE_OVERRIDE_IWD, BETTER_SCOPE_OVERRIDE_IWD_LOCALIZED):
+        p = base / name
+        if p.is_file():
+            p.unlink()
+            removed.append(name)
+    return removed
+
+
+def find_better_scope_source(base: Path) -> Path | None:
+    """Locate COD4 scope pack (prefer ``scope_source.zip``; accept legacy ``scope.iwd``)."""
+    names = (SCOPE_SOURCE_IWD, *SCOPE_SOURCE_FALLBACKS)
+    dirs = (
+        base,
+        app_dir(),
+        Path.home() / "Desktop",
+        Path.home() / "OneDrive" / "Desktop",
+    )
+    for d in dirs:
+        for name in names:
+            p = d / name
+            if p.is_file():
+                return p
+    return None
+
+
+def extract_first_iwi_from_iwd(iwd_path: Path, dest_iwi: Path) -> Path:
+    """Extract the first ``.iwi`` entry from an IWD/ZIP into ``dest_iwi``."""
+    with zipfile.ZipFile(iwd_path, "r") as z:
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            name = Path(info.filename).name
+            if name.lower().endswith(".iwi"):
+                dest_iwi.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as src, open(dest_iwi, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                return dest_iwi
+    raise FileNotFoundError(f"No .iwi found in {iwd_path.name}")
+
+
+def extract_stock_scope_templates(base: Path) -> dict[str, bytes]:
+    """Read stock WaW ``scope_overlay*.iwi`` bytes (for valid IWI headers/flags)."""
+    want = {n.lower(): n for n in WAW_SCOPE_OVERLAY_NAMES}
+    found: dict[str, bytes] = {}
+    for iwd in _iter_source_iwds(base):
+        try:
+            with zipfile.ZipFile(iwd, "r") as z:
+                for info in z.infolist():
+                    if info.is_dir():
+                        continue
+                    name = Path(info.filename).name
+                    key = name.lower()
+                    if key not in want or key in found:
+                        continue
+                    found[key] = z.read(info)
+                    if len(found) == len(want):
+                        return {want[k]: v for k, v in found.items()}
+        except zipfile.BadZipFile:
+            continue
+    return {want[k]: v for k, v in found.items()}
+
+
+def inject_dds_into_stock_iwi(stock_iwi: bytes, dds_bytes: bytes) -> bytes:
+    """
+    Keep the stock WaW IWI header/flags (byte 0xC3 etc.) and replace DXT payload
+    with pixels from a DDS. Stock IWDs use a 28-byte header + raw DXT5 for 1024 overlays.
+    """
+    if len(dds_bytes) < 128 or dds_bytes[:4] != b"DDS ":
+        raise ValueError("not a DDS file")
+    payload = dds_bytes[128:]
+    hdr_len = len(stock_iwi) - len(payload)
+    if hdr_len < 16 or hdr_len > 256:
+        hdr_len = 28
+    if len(stock_iwi) < hdr_len:
+        raise ValueError("stock IWI too small")
+    return stock_iwi[:hdr_len] + payload
+
+
+def convert_cod4_scope_to_dds(
+    src_iwi: Path,
+    *,
+    iwi2dds: Path,
+) -> tuple[bool, bytes | None, str]:
+    """Decode COD4 scope IWI → DDS bytes."""
+    with tempfile.TemporaryDirectory(prefix="iwd_scope_") as td:
+        work = Path(td)
+        local = work / "scope_in.iwi"
+        shutil.copy2(src_iwi, local)
+        code, out, err = run_cmd([iwi2dds, local], cwd=work)
+        raw_dds = _iwi2dds_output_dds(work, local, out, err)
+        if raw_dds is None:
+            return False, None, (
+                f"iwi2dds failed for scope overlay (exit {code}): {out}\n{err}"
+            )
+        return True, raw_dds.read_bytes(), f"decoded scope DDS ({raw_dds.stat().st_size} bytes)"
+
+
+def patch_scope_weapon_bytes(data: bytes) -> tuple[bytes, list[str]]:
+    """
+    Point sniper ADS overlays at stock ``empty_overlay`` so the heavy black
+    vignette cannot draw. Image overrides alone are unreliable for HUD overlays
+    (often still served from the original IWD / FastFile path).
+    """
+    text = data.decode("latin1")
+    changes: list[str] = []
+
+    def repl_field(src: str, key: str, new_val: str) -> str:
+        pat = re.compile("(" + re.escape(key) + r"\\)([^\\]*)")
+        m = pat.search(src)
+        if not m:
+            return src
+        old = m.group(2)
+        if old == new_val:
+            return src
+        changes.append(f"{key}: {old!r} -> {new_val!r}")
+        return pat.sub(r"\g<1>" + new_val, src, count=1)
+
+    text2 = text
+    text2 = repl_field(text2, "adsOverlayShader", "empty_overlay")
+    text2 = repl_field(text2, "adsOverlayShaderLowRes", "empty_overlay")
+    return text2.encode("latin1"), changes
+
+
+def collect_and_patch_scope_weapons(
+    base: Path, dest_dir: Path
+) -> list[tuple[Path, list[str]]]:
+    """Copy scoped weapon files that use scope_overlay* and retarget ADS overlay."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    found: dict[str, tuple[Path, list[str]]] = {}
+    for iwd in _iter_source_iwds(base):
+        try:
+            with zipfile.ZipFile(iwd, "r") as z:
+                for info in z.infolist():
+                    if info.is_dir():
+                        continue
+                    low = info.filename.replace("\\", "/").lower()
+                    if not low.startswith("weapons/"):
+                        continue
+                    raw = z.read(info)
+                    # Fast reject: only files that reference a scope overlay shader.
+                    if b"scope_overlay" not in raw and b"adsOverlayShader" not in raw:
+                        continue
+                    # Must actually be a scoped overlay user.
+                    try:
+                        text = raw.decode("latin1")
+                    except Exception:
+                        continue
+                    if "scope_overlay" not in text and "adsOverlayShader" not in text:
+                        continue
+                    if "adsOverlayShader" not in text:
+                        continue
+                    patched, changes = patch_scope_weapon_bytes(raw)
+                    if not changes:
+                        continue
+                    key = low
+                    if key in found:
+                        continue
+                    out = dest_dir / Path(info.filename)
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_bytes(patched)
+                    found[key] = (out, changes)
+        except zipfile.BadZipFile:
+            continue
+    return [found[k] for k in sorted(found)]
+
+
+def encode_clear_scope_dds(
+    *,
+    texconv: Path,
+    size: int = 1024,
+    accent: Image.Image | None = None,
+) -> bytes:
+    """
+    Build a WaW-friendly clear overlay DDS: fully transparent, optional tiny
+    center accent from the COD4 pack (red cross etc.).
+    """
+    with tempfile.TemporaryDirectory(prefix="iwd_scope_png_") as td:
+        work = Path(td)
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        if accent is not None:
+            a = accent.convert("RGBA")
+            # Keep only bright non-black accent pixels (e.g. red cross).
+            arr = np.array(a)
+            lum = arr[:, :, :3].max(axis=2)
+            arr[lum < 40, 3] = 0
+            a = Image.fromarray(arr, "RGBA")
+            if a.size != (size, size):
+                a = a.resize((size, size), Image.Resampling.NEAREST)
+            canvas.alpha_composite(a)
+        png = work / "scope_overlay.png"
+        canvas.save(png)
+        dds = work / "scope_overlay.dds"
+        code, o, e = run_cmd(
+            [texconv, "-f", "BC3_UNORM", "-m", "1", "-o", str(work), str(png), "-y"],
+            cwd=work,
+        )
+        if code != 0 or not dds.is_file():
+            raise RuntimeError(f"texconv clear scope failed: {o}\n{e}")
+        return dds.read_bytes()
+
+
+def build_better_scope_override(
+    base: Path,
+    *,
+    iwi2dds: Path,
+    dds2iwi: Path,
+    texconv: Path | None = None,
+) -> tuple[bool, str]:
+    """
+    Build ``zz_better_scope.iwd`` (+ localized twin):
+
+    1. Patch scoped weapons so ``adsOverlayShader`` → ``empty_overlay`` (removes
+       the stock black ring reliably).
+    2. Replace ``scope_overlay*.iwi`` with a clear WaW-header IWI (optional COD4
+       accent), packed ZIP_STORED like stock.
+    """
+    del dds2iwi
+    src_iwd = find_better_scope_source(base)
+    templates = extract_stock_scope_templates(base)
+    missing = [n for n in WAW_SCOPE_OVERLAY_NAMES if n not in templates]
+    if missing:
+        return False, "Missing stock scope templates: " + ", ".join(missing)
+
+    with tempfile.TemporaryDirectory(prefix="iwd_better_scope_") as td:
+        uroot = Path(td)
+
+        weapons = collect_and_patch_scope_weapons(base, uroot)
+        for wp, ch in weapons:
+            # logged by caller if needed; keep message summary
+            _ = (wp, ch)
+
+        accent = None
+        if src_iwd is not None and texconv is not None:
+            raw = uroot / "cod4_scope.iwi"
+            try:
+                extract_first_iwi_from_iwd(src_iwd, raw)
+                ok, dds_bytes, _msg = convert_cod4_scope_to_dds(raw, iwi2dds=iwi2dds)
+                raw.unlink(missing_ok=True)
+                if ok and dds_bytes is not None:
+                    # DDS → PNG for accent extract
+                    with tempfile.TemporaryDirectory(prefix="scope_acc_") as td2:
+                        w2 = Path(td2)
+                        dds_path = w2 / "c.dds"
+                        dds_path.write_bytes(dds_bytes)
+                        run_cmd(
+                            [texconv, "-ft", "png", "-o", str(w2), str(dds_path), "-y"],
+                            cwd=w2,
+                        )
+                        png = w2 / "c.png"
+                        if png.is_file():
+                            accent = Image.open(png).convert("RGBA").copy()
+            except (FileNotFoundError, zipfile.BadZipFile, OSError):
+                accent = None
+
+        if texconv is None:
+            return False, "texconv is required to build clear scope overlays"
+
+        try:
+            # Match stock overlay resolution from template size.
+            stock_len = len(templates[WAW_SCOPE_OVERLAY_NAMES[0]])
+            # 28-byte header + DXT5 1024² ⇒ 1048604; derive size from payload.
+            payload = max(0, stock_len - 28)
+            # DXT5 bytes = w*h; for square: side = sqrt(payload)
+            side = int(round(payload ** 0.5))
+            if side < 64:
+                side = 1024
+            clear_dds = encode_clear_scope_dds(
+                texconv=texconv, size=side, accent=accent
+            )
+        except RuntimeError as e:
+            return False, str(e)
+
+        images = uroot / "images"
+        images.mkdir(parents=True, exist_ok=True)
+        for name in WAW_SCOPE_OVERLAY_NAMES:
+            try:
+                injected = inject_dds_into_stock_iwi(templates[name], clear_dds)
+            except ValueError as e:
+                return False, f"{name}: {e}"
+            (images / name).write_bytes(injected)
+
+        tmp_out = uroot.parent / "_out_better_scope.zip"
+        if tmp_out.is_file():
+            tmp_out.unlink()
+        repack_iwd(uroot, tmp_out, compress=False)
+        written: list[str] = []
+        for out_name in (BETTER_SCOPE_OVERRIDE_IWD, BETTER_SCOPE_OVERRIDE_IWD_LOCALIZED):
+            dest = base / out_name
+            if dest.is_file():
+                dest.unlink()
+            shutil.copy2(tmp_out, dest)
+            written.append(out_name)
+        tmp_out.unlink(missing_ok=True)
+
+        try:
+            if src_iwd is not None:
+                stable = base / SCOPE_SOURCE_IWD
+                if src_iwd.resolve() != stable.resolve():
+                    shutil.copy2(src_iwd, stable)
+                legacy = base / "scope.iwd"
+                if legacy.is_file():
+                    legacy.unlink()
+        except OSError:
+            pass
+
+        return True, (
+            f"Wrote {', '.join(written)}: {len(weapons)} scoped weapon(s) -> "
+            f"empty_overlay, {len(WAW_SCOPE_OVERLAY_NAMES)} clear overlays."
+        )
+
+
 def collect_foliage_iwis_from_iwds(base: Path, dest_dir: Path) -> list[Path]:
     """Extract foliage/grass IWIs into dest_dir (unique by name)."""
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -483,6 +881,10 @@ def _iter_source_iwds(base: Path) -> list[Path]:
         SMOKE_OVERRIDE_LEGACY.lower(),
         FOLIAGE_OVERRIDE_IWD.lower(),
         FOLIAGE_OVERRIDE_IWD_LOCALIZED.lower(),
+        BETTER_SCOPE_OVERRIDE_IWD.lower(),
+        BETTER_SCOPE_OVERRIDE_IWD_LOCALIZED.lower(),
+        "scope.iwd",
+        SCOPE_SOURCE_IWD.lower(),
     }
     out: list[Path] = []
     for pattern in ("iw_*.iwd", "localized_english_*.iwd"):
@@ -881,9 +1283,19 @@ def extract_iwd(iwd_path: Path, out_dir: Path) -> None:
         z.extractall(out_dir)
 
 
-def repack_iwd(source_dir: Path, dest_iwd: Path) -> None:
+def repack_iwd(
+    source_dir: Path,
+    dest_iwd: Path,
+    *,
+    compress: bool = True,
+) -> None:
+    """
+    Pack ``source_dir`` into an IWD (ZIP). Stock WaW IWDs use ZIP_STORED for images;
+    ``compress=False`` matches that (needed for some overlay overrides).
+    """
     dest_iwd.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(dest_iwd, "w", zipfile.ZIP_DEFLATED) as z:
+    method = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+    with zipfile.ZipFile(dest_iwd, "w", method) as z:
         for fp in sorted(source_dir.rglob("*")):
             if fp.is_file():
                 arc = fp.relative_to(source_dir).as_posix()
@@ -974,7 +1386,28 @@ def process_one_smoke_blank(
     iwi2dds: Path,
     dds2iwi: Path,
 ) -> tuple[bool, str]:
-    """Replace a smoke particle IWI with a fully blank (0,0,0,0) texture of the same size."""
+    """Replace a smoke/foliage IWI with a fully blank (0,0,0,0) texture of the same size."""
+    return process_one_smoke_replace(
+        iwi_src,
+        texconv=texconv,
+        iwi2dds=iwi2dds,
+        dds2iwi=dds2iwi,
+        particle=None,
+    )
+
+
+def process_one_smoke_replace(
+    iwi_src: Path,
+    *,
+    texconv: Path,
+    iwi2dds: Path,
+    dds2iwi: Path,
+    particle: Image.Image | None,
+) -> tuple[bool, str]:
+    """
+    Replace an IWI with either a blank texture (``particle is None``) or a resized
+    copy of ``particle`` (RGBA), keeping the original dimensions.
+    """
     with tempfile.TemporaryDirectory(prefix="iwdsmoke_") as td:
         work = Path(td)
         local_iwi = work / iwi_src.name
@@ -1008,7 +1441,12 @@ def process_one_smoke_blank(
 
         with Image.open(png) as src_im:
             w, h = src_im.size
-        Image.fromarray(np.zeros((h, w, 4), dtype=np.uint8), "RGBA").save(png)
+        if particle is None:
+            Image.fromarray(np.zeros((h, w, 4), dtype=np.uint8), "RGBA").save(png)
+            label = "blanked"
+        else:
+            fit_particle_to_size(particle, w, h).save(png)
+            label = "particle"
 
         code, o3, e3 = run_cmd([texconv, "-f", "BC3_UNORM", "-o", str(work), str(png), "-y"], cwd=work)
         if code != 0:
@@ -1025,7 +1463,7 @@ def process_one_smoke_blank(
             return False, f"no output IWI: {iwi_src.name}"
 
         shutil.copy2(out_iwi, iwi_src)
-        return True, f"blanked {iwi_src.name} ({w}x{h})"
+        return True, f"{label} {iwi_src.name} ({w}x{h})"
 
 
 def main() -> None:
@@ -1053,9 +1491,13 @@ def main() -> None:
     ColorPicker(allied_frm, allied_hex, default_rgb=(0, 255, 0)).pack(fill=tk.X)
 
     no_smoke_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(frm, text="no smoke", variable=no_smoke_var).pack(anchor=tk.W, pady=(4, 0))
+    ttk.Checkbutton(
+        frm, text="custom smoke (star particles)", variable=no_smoke_var
+    ).pack(anchor=tk.W, pady=(4, 0))
     no_foliage_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frm, text="no foliage", variable=no_foliage_var).pack(anchor=tk.W, pady=(2, 0))
+    better_scope_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(frm, text="better scope", variable=better_scope_var).pack(anchor=tk.W, pady=(2, 0))
 
     log_q: queue.Queue[str] = queue.Queue()
     log_w = tk.Text(frm, height=5, wrap=tk.WORD, font=("Consolas", 8))
@@ -1089,6 +1531,17 @@ def main() -> None:
         texc = find_texconv()
         no_smoke = bool(no_smoke_var.get())
         no_foliage = bool(no_foliage_var.get())
+        better_scope = bool(better_scope_var.get())
+
+        if no_smoke and find_smoke_particle_png(base) is None:
+            messagebox.showerror(
+                "Missing smoke PNG",
+                f"\"custom smoke\" needs {SMOKE_PARTICLE_PNG}.\n\n"
+                f"Place it in:\n{base}\n"
+                "or next to this script / in Pictures "
+                "(Israeli_blue_Star_of_David.png).",
+            )
+            return
 
         if not _iter_source_iwds(base):
             messagebox.showerror(
@@ -1218,36 +1671,40 @@ def main() -> None:
                     shutil.move(str(tmp_out), str(out_team))
                     log(f"Wrote {TEAM_OVERRIDE_IWD} ({total} textures).")
 
-                # --- no smoke ---
+                # --- custom smoke particles ---
                 if no_smoke:
+                    png_path = find_smoke_particle_png(base)
+                    assert png_path is not None  # validated before thread start
+                    # Keep engine clouds on so remapped particle sprites can draw.
                     cfg_path = apply_no_smoke_autoexec(base, enabled=True)
                     log(
-                        f"no smoke: set fx_drawClouds 0 in {Path(cfg_path).name} "
-                        "(MP smoke is an engine particle-cloud)."
+                        f"custom smoke: fx_drawClouds 1 in {Path(cfg_path).name}; "
+                        f"using particle art {png_path.name}"
                     )
+                    try:
+                        if png_path.resolve() != (base / SMOKE_PARTICLE_PNG).resolve():
+                            shutil.copy2(png_path, base / SMOKE_PARTICLE_PNG)
+                    except OSError:
+                        pass
+                    particle = load_smoke_particle_rgba(png_path)
                     with tempfile.TemporaryDirectory(prefix="iwd_smoke_") as unpack:
                         uroot = Path(unpack)
                         log(
-                            "no smoke: patching smoke grenade weapons + blanking "
-                            f"particle textures → {SMOKE_OVERRIDE_IWD} …"
+                            "custom smoke: replacing smoke particle textures → "
+                            f"{SMOKE_OVERRIDE_IWD} …"
                         )
-                        weapons = collect_and_patch_smoke_weapons(base, uroot)
-                        for wp, ch in weapons:
-                            log(f"weapon {wp.relative_to(uroot).as_posix()}: " + "; ".join(ch))
-                        if not weapons:
-                            log("Warning: no m8_white_smoke weapon files found to patch.")
-
                         smokes = collect_smoke_particle_iwis_from_iwds(base, uroot)
                         stotal = len(smokes)
-                        log(f"Found {stotal} smoke particle IWI(s) to blank.")
+                        log(f"Found {stotal} smoke particle IWI(s) to replace.")
                         sdone = 0
                         sfailed = 0
                         for p in smokes:
-                            ok, msg = process_one_smoke_blank(
+                            ok, msg = process_one_smoke_replace(
                                 p,
                                 texconv=texc,
                                 iwi2dds=iwi2dds,
                                 dds2iwi=dds2iwi,
+                                particle=particle,
                             )
                             log(msg)
                             if not ok:
@@ -1259,10 +1716,13 @@ def main() -> None:
                             )
 
                         if sfailed:
-                            log(f"Smoke blanking had {sfailed} error(s); not writing override.")
+                            log(
+                                f"Smoke replace had {sfailed} error(s); "
+                                "not writing override."
+                            )
                             failed += sfailed
-                        elif not weapons and stotal == 0:
-                            log("Nothing to write for no-smoke IWD (dvar still applied).")
+                        elif stotal == 0:
+                            log("No smoke particle IWIs found to replace.")
                         else:
                             legacy = base / SMOKE_OVERRIDE_LEGACY
                             if legacy.is_file():
@@ -1275,14 +1735,17 @@ def main() -> None:
                             if tmp_out.is_file():
                                 tmp_out.unlink()
                             repack_iwd(uroot, tmp_out)
-                            for out_name in (SMOKE_OVERRIDE_IWD, SMOKE_OVERRIDE_IWD_LOCALIZED):
+                            for out_name in (
+                                SMOKE_OVERRIDE_IWD,
+                                SMOKE_OVERRIDE_IWD_LOCALIZED,
+                            ):
                                 out_smoke = base / out_name
                                 if out_smoke.is_file():
                                     out_smoke.unlink()
                                 shutil.copy2(tmp_out, out_smoke)
                                 log(
                                     f"Wrote {out_name} "
-                                    f"({len(weapons)} weapons, {stotal} blank textures)."
+                                    f"({stotal} custom particle textures)."
                                 )
                             tmp_out.unlink(missing_ok=True)
                 else:
@@ -1292,7 +1755,7 @@ def main() -> None:
                     if removed:
                         log("Smoke restored (removed): " + ", ".join(removed))
                     else:
-                        log("no smoke unchecked — stock smoke IWD left as-is.")
+                        log("custom smoke unchecked — stock smoke left as-is.")
 
                 # --- no foliage / grass ---
                 if no_foliage:
@@ -1365,6 +1828,28 @@ def main() -> None:
                     else:
                         log("no foliage unchecked — stock foliage left as-is.")
 
+                # --- better scope (COD4 overlay → WaW names) ---
+                if better_scope:
+                    log(
+                        f"better scope: converting {SCOPE_SOURCE_IWD} → "
+                        f"{BETTER_SCOPE_OVERRIDE_IWD} …"
+                    )
+                    ok, msg = build_better_scope_override(
+                        base,
+                        iwi2dds=iwi2dds,
+                        dds2iwi=dds2iwi,
+                        texconv=texc,
+                    )
+                    log(msg)
+                    if not ok:
+                        failed += 1
+                else:
+                    removed = remove_better_scope_override_iwds(base)
+                    if removed:
+                        log("Scope restored (removed): " + ", ".join(removed))
+                    else:
+                        log("better scope unchecked — stock overlays left as-is.")
+
                 if failed:
                     root.after(
                         0,
@@ -1378,7 +1863,7 @@ def main() -> None:
                         stop_mp3_music()
                         play_mp3_music(resolve_mp3("sheckles"), 0.05)
                         smoke_msg = (
-                            f"\nNo smoke: fx_drawClouds 0 + {SMOKE_OVERRIDE_IWD}."
+                            f"\nCustom smoke: {SMOKE_PARTICLE_PNG} → {SMOKE_OVERRIDE_IWD}."
                             if no_smoke
                             else "\nSmoke: restored (checkbox off)."
                         )
@@ -1387,9 +1872,14 @@ def main() -> None:
                             if no_foliage
                             else "\nFoliage: restored (checkbox off)."
                         )
+                        scope_msg = (
+                            f"\nBetter scope: {BETTER_SCOPE_OVERRIDE_IWD}."
+                            if better_scope
+                            else "\nScope: restored (checkbox off)."
+                        )
                         messagebox.showinfo(
                             "Done",
-                            f"Wrote {TEAM_OVERRIDE_IWD}.{smoke_msg}{foliage_msg}",
+                            f"Wrote {TEAM_OVERRIDE_IWD}.{smoke_msg}{foliage_msg}{scope_msg}",
                         )
 
                     root.after(0, show_done_success)
@@ -1406,9 +1896,12 @@ def main() -> None:
     ttk.Label(
         frm,
         text="COLOR writes zz_team_colours.iwd (loads last — Red Army included). "
-        "\"no smoke\" hides MP smoke (fx_drawClouds 0 + zz_no_smoke.iwd). "
+        "\"custom smoke\" remaps smoke particle textures to smoke_particle.png "
+        f"(Star of David) in {SMOKE_OVERRIDE_IWD}, and keeps fx_drawClouds on. "
         "\"no foliage\" blanks grass/foliage textures into zz_no_foliage.iwd "
-        "and sets r_grassEnable / r_gfxopt_dynamic_foliage 0. Uncheck to restore.",
+        "and sets r_grassEnable / r_gfxopt_dynamic_foliage 0. "
+        "\"better scope\" remaps COD4 scope.iwd onto WaW scope_overlay*.iwi "
+        f"→ {BETTER_SCOPE_OVERRIDE_IWD}. Uncheck any option to restore.",
         font=("Segoe UI", 8),
         foreground="#444",
         wraplength=620,
